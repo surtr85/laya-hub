@@ -112,6 +112,18 @@ skills:
 
 ---
 
+## 🧠 Agent Skill Integration
+
+LayaHub provides an agent skill definition compliant with standard agent harnesses (`pi`, `skills.sh`, Claude Code, Antigravity, DSH) located at [`skills/laya-hub/SKILL.md`](skills/laya-hub/SKILL.md).
+
+To install or link the skill into your local agent skills directory:
+```bash
+mkdir -p ~/.pi/agent/skills/laya-hub
+cp skills/laya-hub/SKILL.md ~/.pi/agent/skills/laya-hub/
+```
+
+---
+
 ## 📜 License
 
 MIT © 2026 Sajjad (surtr85)
