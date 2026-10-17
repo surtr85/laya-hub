@@ -7,7 +7,7 @@ description: Master control plane and capability router for AI coding agents con
 
 **LayaHub (`surtr85/laya-hub`)** is the zero-bloat, ultra-low-latency MCP supervisor and dynamic capability gateway written in high-performance asynchronous Rust (`tokio`).
 
-Instead of polluting LLM context windows with 160+ static tool definitions, all harnesses (Pi, Antigravity, DSH) connect exclusively to `laya_hub` and interact via three high-density meta-tools.
+Instead of polluting LLM context windows with 160+ static tool definitions, all harnesses (Pi, Antigravity, DSH) connect exclusively to `laya_hub` and interact via four high-density meta-tools.
 
 ---
 
@@ -25,7 +25,12 @@ Evaluates the task using the local Laya System-1 Vulkan model (`http://127.0.0.1
 - Performs stdio or HTTP/SSE JSON-RPC call handshaking transparently.
 - Returns the execution result directly.
 
-### 3. `hub_status()`
+### 3. `hub_tools(server: string, tool?: string, refresh?: boolean)`
+- Inspects and introspects available tools and parameter JSON schemas for any registered MCP server.
+- Supports filtering by specific `tool` name or listing all tools.
+- Uses thread-safe in-memory caching to guarantee zero-latency repeated introspection.
+
+### 4. `hub_status()`
 Inspects:
 - Active running subprocesses.
 - Registered server definitions.

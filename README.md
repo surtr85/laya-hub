@@ -21,7 +21,7 @@ Modern AI agents and coding harnesses (Pi, Claude Desktop, Cursor, DeepSeek Harn
 1. **Single Source of Truth**: All MCP servers (local stdio, remote HTTP/SSE) and Skills (Markdown workflows) are declared in one central YAML file.
 2. **Dynamic Capability Routing (<50ms)**: Instead of flooding the agent with 100+ tools, Laya-Hub uses **Laya System-1** (non-autoregressive ModernBERT on Vulkan) to score incoming requests and return only the relevant tools and full skill markdown instructions.
 3. **On-Demand Lifecycle (Zero Memory Waste)**: Subprocesses are spawned only when called and automatically killed after an idle timeout.
-4. **Universal Client Support**: Exposes a compact, standard 3-tool MCP interface (`hub_route`, `hub_call`, `hub_status`) compatible with any MCP client.
+4. **Universal Client Support**: Exposes a compact, standard 4-tool MCP interface (`hub_route`, `hub_call`, `hub_tools`, `hub_status`) compatible with any MCP client.
 
 ```text
 [ Pi / DSH / Cursor / Claude ]
@@ -108,6 +108,7 @@ skills:
 |---|---|---|
 | `hub_route` | `task: string` | Scores task via Laya System-1, returns top matched MCP tools and injects full Markdown skill guides. |
 | `hub_call` | `server: string, tool: string, arguments: object` | Spawns target server on demand, executes tool call, and returns result. |
+| `hub_tools` | `server: string, tool?: string, refresh?: boolean` | Introspects available tools and JSON schemas for any server with thread-safe caching. |
 | `hub_status` | none | Reports registered servers, active running child processes, and Laya status. |
 
 ---
