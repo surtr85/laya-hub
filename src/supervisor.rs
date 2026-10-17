@@ -8,7 +8,7 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info};
 
 use crate::config::{AppConfig, McpServerConfig};
 
@@ -16,6 +16,7 @@ pub struct ProcessSupervisor {
     config: Arc<AppConfig>,
     active_stdio: Arc<Mutex<HashMap<String, StdioProcess>>>,
     http_client: HttpClient,
+    tools_cache: Arc<Mutex<HashMap<String, Value>>>,
 }
 
 struct StdioProcess {
@@ -34,7 +35,40 @@ impl ProcessSupervisor {
                 .timeout(Duration::from_secs(60))
                 .build()
                 .unwrap_or_default(),
+            tools_cache: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Query tools/list for a specific server, with thread-safe caching
+    pub async fn list_tools(&self, server_id: &str, force_refresh: bool) -> Result<Value> {
+        if !force_refresh {
+            let cache = self.tools_cache.lock().await;
+            if let Some(cached) = cache.get(server_id) {
+                return Ok(cached.clone());
+            }
+        }
+
+        let rpc_call = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 101,
+            "method": "tools/list",
+            "params": {}
+        });
+
+        let resp = self.call_server(server_id, rpc_call).await?;
+
+        let tools = resp
+            .get("result")
+            .and_then(|r| r.get("tools"))
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([]));
+
+        {
+            let mut cache = self.tools_cache.lock().await;
+            cache.insert(server_id.to_string(), tools.clone());
+        }
+
+        Ok(tools)
     }
 
     /// Forward a JSON-RPC request to a target MCP server
@@ -70,7 +104,9 @@ impl ProcessSupervisor {
     ) -> Result<Value> {
         let mut req_builder = self.http_client.post(url).json(&payload);
         for (k, v) in headers {
-            req_builder = req_builder.header(k, v);
+            if !v.trim().is_empty() {
+                req_builder = req_builder.header(k, v);
+            }
         }
 
         let resp = req_builder
@@ -158,17 +194,105 @@ impl ProcessSupervisor {
         proc.stdin.write_all(line.as_bytes()).await?;
         proc.stdin.flush().await?;
 
-        // Read line response
-        let mut response_line = String::new();
-        let n = proc.reader.read_line(&mut response_line).await?;
-        if n == 0 {
-            bail!("MCP server '{}' closed connection unexpectedly", server_id);
-        }
-
-        let resp: Value = serde_json::from_str(&response_line)
-            .with_context(|| format!("Invalid JSON received from '{}': {}", server_id, response_line))?;
+        // Read line response with robust parser
+        let expected_id = payload.get("id");
+        let resp = Self::read_jsonrpc_response(
+            &mut proc.reader,
+            server_id,
+            expected_id,
+            Duration::from_secs(60),
+        )
+        .await?;
 
         Ok(resp)
+    }
+
+    async fn read_jsonrpc_response(
+        reader: &mut BufReader<ChildStdout>,
+        server_id: &str,
+        expected_id: Option<&Value>,
+        timeout_duration: Duration,
+    ) -> Result<Value> {
+        let deadline = Instant::now() + timeout_duration;
+
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                bail!(
+                    "Timeout ({:?}) waiting for JSON-RPC response from MCP server '{}'",
+                    timeout_duration,
+                    server_id
+                );
+            }
+            let remaining = deadline - now;
+            let mut line = String::new();
+
+            let n = match tokio::time::timeout(remaining, reader.read_line(&mut line)).await {
+                Ok(res) => res.with_context(|| {
+                    format!("Error reading stdout from MCP server '{}'", server_id)
+                })?,
+                Err(_) => {
+                    bail!(
+                        "Timeout ({:?}) waiting for JSON-RPC response from MCP server '{}'",
+                        timeout_duration,
+                        server_id
+                    );
+                }
+            };
+
+            if n == 0 {
+                bail!("MCP server '{}' closed connection unexpectedly", server_id);
+            }
+
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            // Skip lines that do not start with '{' (likely server logs or warnings on stdout)
+            if !trimmed.starts_with('{') {
+                debug!(
+                    "MCP server '{}' emitted non-JSON line on stdout: {}",
+                    server_id, trimmed
+                );
+                continue;
+            }
+
+            match serde_json::from_str::<Value>(trimmed) {
+                Ok(val) => {
+                    // Check if this is an MCP notification (has method and no id)
+                    if val.get("method").is_some() && val.get("id").is_none() {
+                        debug!(
+                            "MCP server '{}' emitted notification: {}",
+                            server_id, trimmed
+                        );
+                        continue;
+                    }
+
+                    // If an expected_id was provided, check if it matches
+                    if let Some(exp_id) = expected_id {
+                        if let Some(resp_id) = val.get("id") {
+                            if resp_id != exp_id {
+                                debug!(
+                                    "MCP server '{}' sent response with mismatched id (got {}, expected {}): {}",
+                                    server_id, resp_id, exp_id, trimmed
+                                );
+                                continue;
+                            }
+                        }
+                    }
+
+                    return Ok(val);
+                }
+                Err(err) => {
+                    debug!(
+                        "MCP server '{}' emitted unparseable JSON on stdout: {} ({})",
+                        server_id, trimmed, err
+                    );
+                    continue;
+                }
+            }
+        }
     }
 
     async fn do_initialize_handshake(proc: &mut StdioProcess, server_id: &str) -> Result<()> {
@@ -191,11 +315,15 @@ impl ProcessSupervisor {
         proc.stdin.write_all(line.as_bytes()).await?;
         proc.stdin.flush().await?;
 
-        let mut response_line = String::new();
-        let n = proc.reader.read_line(&mut response_line).await?;
-        if n == 0 {
-            bail!("Server '{}' exited during MCP initialize", server_id);
-        }
+        let expected_id = serde_json::json!(1);
+        let _init_resp = Self::read_jsonrpc_response(
+            &mut proc.reader,
+            server_id,
+            Some(&expected_id),
+            Duration::from_secs(30),
+        )
+        .await
+        .with_context(|| format!("Failed during initialize handshake with '{}'", server_id))?;
 
         // Send notifications/initialized
         let notify = serde_json::json!({

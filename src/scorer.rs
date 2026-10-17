@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 

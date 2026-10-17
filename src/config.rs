@@ -149,18 +149,38 @@ fn resolve_val(input: &str) -> String {
         if let Ok(content) = std::fs::read_to_string(&path) {
             return content.trim().to_string();
         }
+        return String::new();
     }
 
     if let Some(rest) = trimmed.strip_prefix("env:") {
         if let Ok(val) = std::env::var(rest) {
             return val;
         }
+        return String::new();
     }
 
     // Support standard $VAR or ${VAR} expansion
     shellexpand::env(input)
         .unwrap_or_else(|_| input.into())
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_val_env_missing() {
+        let val = resolve_val("env:DEFINITELY_NON_EXISTENT_VAR_12345");
+        assert_eq!(val, "");
+    }
+
+    #[test]
+    fn test_resolve_val_env_present() {
+        std::env::set_var("TEST_FOO_BAR_LAYA", "hello_world");
+        let val = resolve_val("env:TEST_FOO_BAR_LAYA");
+        assert_eq!(val, "hello_world");
+    }
 }
 
 pub fn read_skill_content(path_str: &str) -> Result<String> {

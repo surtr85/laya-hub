@@ -1,6 +1,6 @@
 use std::sync::Arc;
-use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use anyhow::{bail, Context, Result};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tracing::{error, info};
@@ -17,6 +17,7 @@ pub struct McpHandler {
 
 #[derive(Debug, Deserialize)]
 struct JsonRpcRequest {
+    #[allow(dead_code)]
     #[serde(default)]
     jsonrpc: String,
     id: Option<Value>,
@@ -140,6 +141,28 @@ impl McpHandler {
                         }
                     }),
                     json!({
+                        "name": "hub_tools",
+                        "description": "Inspects and returns available tools and parameter schemas for a registered MCP server.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "server": {
+                                    "type": "string",
+                                    "description": "Target registered MCP server ID (e.g. github, context7, ast_grep, herdlink)"
+                                },
+                                "tool": {
+                                    "type": "string",
+                                    "description": "Optional specific tool name to inspect in detail"
+                                },
+                                "refresh": {
+                                    "type": "boolean",
+                                    "description": "Force refresh tool definitions from server without cache (default false)"
+                                }
+                            },
+                            "required": ["server"]
+                        }
+                    }),
+                    json!({
                         "name": "hub_status",
                         "description": "Returns current supervisor status: loaded skills, registered MCP servers, active running servers, and Laya configuration.",
                         "inputSchema": {
@@ -163,6 +186,7 @@ impl McpHandler {
                 let result = match tool_name {
                     "hub_route" => self.handle_hub_route(args).await,
                     "hub_call" => self.handle_hub_call(args).await,
+                    "hub_tools" => self.handle_hub_tools(args).await,
                     "hub_status" => self.handle_hub_status().await,
                     _ => Err(anyhow::anyhow!("Unknown tool '{}'", tool_name)),
                 };
@@ -225,18 +249,62 @@ impl McpHandler {
 
         let tool_args = args.get("arguments").cloned().unwrap_or(json!({}));
 
-        let rpc_call = json!({
-            "jsonrpc": "2.0",
-            "id": 100,
-            "method": "tools/call",
-            "params": {
-                "name": tool,
-                "arguments": tool_args
-            }
-        });
+        let rpc_call = if tool == "tools/list" || tool == "list_tools" {
+            json!({
+                "jsonrpc": "2.0",
+                "id": 100,
+                "method": "tools/list",
+                "params": tool_args
+            })
+        } else {
+            json!({
+                "jsonrpc": "2.0",
+                "id": 100,
+                "method": "tools/call",
+                "params": {
+                    "name": tool,
+                    "arguments": tool_args
+                }
+            })
+        };
 
         let resp = self.supervisor.call_server(server, rpc_call).await?;
         Ok(resp)
+    }
+
+    async fn handle_hub_tools(&self, args: Value) -> Result<Value> {
+        let server = args
+            .get("server")
+            .and_then(|v| v.as_str())
+            .context("Parameter 'server' is required for hub_tools")?;
+
+        let refresh = args
+            .get("refresh")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let target_tool = args.get("tool").and_then(|v| v.as_str());
+
+        let tools = self.supervisor.list_tools(server, refresh).await?;
+
+        if let Some(tool_name) = target_tool {
+            if let Some(arr) = tools.as_array() {
+                for t in arr {
+                    if t.get("name").and_then(|v| v.as_str()) == Some(tool_name) {
+                        return Ok(json!({
+                            "server": server,
+                            "tool": t
+                        }));
+                    }
+                }
+                bail!("Tool '{}' not found on MCP server '{}'", tool_name, server);
+            }
+        }
+
+        Ok(json!({
+            "server": server,
+            "tools": tools
+        }))
     }
 
     async fn handle_hub_status(&self) -> Result<Value> {

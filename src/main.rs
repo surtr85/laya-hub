@@ -6,7 +6,6 @@ pub mod supervisor;
 use clap::Parser;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
