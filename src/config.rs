@@ -144,17 +144,43 @@ impl AppConfig {
 
 fn resolve_val(input: &str) -> String {
     let trimmed = input.trim();
+
+    // Support "Bearer <prefix>..." recursive expansion
+    if let Some(rest) = trimmed.strip_prefix("Bearer ") {
+        let inner = resolve_val(rest);
+        if inner.is_empty() {
+            return String::new();
+        }
+        return format!("Bearer {}", inner);
+    }
+
     if let Some(rest) = trimmed.strip_prefix("file:") {
         let path = shellexpand::tilde(rest).to_string();
         if let Ok(content) = std::fs::read_to_string(&path) {
-            return content.trim().to_string();
+            let val = content.trim().to_string();
+            if !val.is_empty() {
+                return val;
+            }
         }
         return String::new();
     }
 
     if let Some(rest) = trimmed.strip_prefix("env:") {
         if let Ok(val) = std::env::var(rest) {
-            return val;
+            let val = val.trim().to_string();
+            if !val.is_empty() {
+                return val;
+            }
+        }
+        // Fallback for COMPOSIO_API_KEY if env var is unset
+        if rest == "COMPOSIO_API_KEY" {
+            let fallback_path = shellexpand::tilde("~/.config/composio/api_key").to_string();
+            if let Ok(content) = std::fs::read_to_string(&fallback_path) {
+                let val = content.trim().to_string();
+                if !val.is_empty() {
+                    return val;
+                }
+            }
         }
         return String::new();
     }

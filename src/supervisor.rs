@@ -102,7 +102,12 @@ impl ProcessSupervisor {
         headers: &HashMap<String, String>,
         payload: Value,
     ) -> Result<Value> {
-        let mut req_builder = self.http_client.post(url).json(&payload);
+        let mut req_builder = self
+            .http_client
+            .post(url)
+            .header("Accept", "application/json, text/event-stream")
+            .json(&payload);
+
         for (k, v) in headers {
             if !v.trim().is_empty() {
                 req_builder = req_builder.header(k, v);
@@ -114,10 +119,47 @@ impl ProcessSupervisor {
             .await
             .with_context(|| format!("HTTP request to {} failed", url))?;
 
-        let body: Value = resp
-            .json()
+        let status = resp.status();
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+
+        let text = resp
+            .text()
             .await
-            .context("Failed to parse HTTP JSON-RPC response")?;
+            .context("Failed to read HTTP response body")?;
+
+        if !status.is_success() {
+            bail!("HTTP {} error from {}: {}", status, url, text);
+        }
+
+        let body: Value = if content_type.contains("text/event-stream") || text.contains("data:") {
+            let mut parsed = None;
+            for line in text.lines() {
+                let trimmed = line.trim();
+                if let Some(rest) = trimmed.strip_prefix("data:") {
+                    let d = rest.trim();
+                    if !d.is_empty() {
+                        if let Ok(v) = serde_json::from_str::<Value>(d) {
+                            parsed = Some(v);
+                            break;
+                        }
+                    }
+                }
+            }
+            parsed.with_context(|| {
+                format!(
+                    "Failed to parse SSE JSON payload from response: {}",
+                    text
+                )
+            })?
+        } else {
+            serde_json::from_str(&text)
+                .with_context(|| format!("Invalid JSON response from {}: {}", url, text))?
+        };
 
         Ok(body)
     }
